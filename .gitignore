@@ -1,0 +1,5 @@
+data_golden_desc/
+data_golden/
+raw_golden_desc/
+raw_golden/
+.ipynb_checkpoints/
