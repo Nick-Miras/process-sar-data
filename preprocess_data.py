@@ -6,10 +6,8 @@ import shutil
 import pandas as pd
 import geopandas as gpd
 import json
-
-from dask.distributed import Client
+from distributed import Client
 import dask
-
 
 # plotting modules
 import pyvista as pv
@@ -64,8 +62,8 @@ scenes = get_sar_1_collections_from(SAR_1_COLLECTIONS_FILE)
 SCENES = scenes
 SCENES.reverse()
 
-WORKDIR = 'raw_golden_desc'
-DATADIR = 'data_golden_desc'
+WORKDIR = 'raw_golden'
+DATADIR = 'data_golden'
 DEM = f'{DATADIR}/dem.nc'
 
 
@@ -99,41 +97,46 @@ AOI = gpd.GeoDataFrame.from_features([json.loads(geojson)])
 AOI = AOI.buffer(0.02)
 
 
-# Set these variables to None and you will be prompted to enter your username and password below.
-asf_username = 'mirasnickanthony'
-asf_password = 'e44 4E6 E447E S56E!'
-asf = ASF(asf_username, asf_password)
-print(asf.download(DATADIR, SCENES))
-S1.download_orbits(DATADIR, S1.scan_slc(DATADIR))
-Tiles().download_dem(AOI, filename=DEM, skip_exist=False).plot.imshow(cmap='cividis')
+def download_orbits():
+    asf_username = 'mirasnickanthony'
+    asf_password = 'e44 4E6 E447E S56E!'
+    asf = ASF(asf_username, asf_password)
+    print(asf.download(DATADIR, SCENES))
+    S1.download_orbits(DATADIR, S1.scan_slc(DATADIR))
+    Tiles().download_dem(AOI, filename=DEM, skip_exist=False)
+
+
+def set_scenes():
+    scenes = S1.scan_slc(DATADIR, subswath=SUBSWATH, polarization=POLARIZATION)
+    sbas = Stack(WORKDIR, drop_if_exists=True).set_scenes(scenes)
+    sbas.compute_reframe(AOI)
+    sbas.load_dem(DEM, AOI)
+    sbas.compute_align()
+    sbas.compute_geocode(1)
+    return sbas
+
+
+def get_landmask(sbas):
+    sbas.set_landmask(None)
+    sbas.load_landmask('recurrence_120E_20Nv1_4_2021.tif')
+    landmask = (sbas.get_landmask()*-1)>-0.02
+    sbas.set_landmask(None)
+    return sbas.ll2ra(landmask)
+
+
+download_orbits()
 
 
 # simple Dask initialization
 if 'client' in globals():
     client.close()
 
-client = Client()
-#import psutil
-#client = Client(n_workers=max(1, psutil.cpu_count() // 4), threads_per_worker=min(4, psutil.cpu_count()))
+
+client = Client(processes=False)
 
 
-scenes = S1.scan_slc(DATADIR, subswath=SUBSWATH, polarization=POLARIZATION)
-sbas = Stack(WORKDIR, drop_if_exists=True).set_scenes(scenes)
-sbas.compute_reframe(AOI)
-sbas.load_dem(DEM, AOI)
-sbas.compute_align()
-sbas.compute_geocode(1)
-
-
-baseline_pairs = sbas.sbas_pairs(days=24)
-
-
-sbas.set_landmask(None)
-sbas.load_landmask('recurrence_120E_20Nv1_4_2021.tif')
-landmask = (sbas.get_landmask()*-1)>-0.02
-sbas.set_landmask(None)
-landmask_ra = sbas.ll2ra(landmask)
-landmask_ra
+sbas = set_scenes()
+landmask_ra = get_landmask(sbas)
 
 
 # load radar topography
@@ -141,6 +144,7 @@ topo = sbas.get_topo()
 # load Sentinel-1 data
 data = sbas.open_data()
 
+baseline_pairs = sbas.sbas_pairs(days=24)
 
 WAVELENGTH = 20
 COARSEN_GRID = (1, 4)
@@ -171,5 +175,7 @@ CO_FLOOD_DOI = '2018-09-04 2018-09-16'
 corr_sbas_df = corr_ll.to_dataframe()
 pre_flood_df = corr_sbas_df[corr_sbas_df.index.get_level_values(0) == PRE_FLOOD_DOI]
 co_flood_df = corr_sbas_df[corr_sbas_df.index.get_level_values(0) == CO_FLOOD_DOI]
-pre_flood_df.to_csv(f'csv/{PRE_FLOOD_DOI} {POLARIZATION}.csv')
-co_flood_df.to_csv(f'csv/{CO_FLOOD_DOI} {POLARIZATION}.csv')
+pre_flood_df.to_csv(f'csv/coherence/{PRE_FLOOD_DOI} {POLARIZATION}.csv')
+co_flood_df.to_csv(f'csv/coherence/{CO_FLOOD_DOI} {POLARIZATION}.csv')
+co_flood_df.to_csv(f'csv//coherence/{CO_FLOOD_DOI} {POLARIZATION}.csv')
+print('Saved Dataframes')
