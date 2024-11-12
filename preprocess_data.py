@@ -203,12 +203,32 @@ corr_ll = sbas.ra2ll(corr)
 intensity_ll = sbas.ra2ll(intensity)
 
 
-PRE_FLOOD_DOI = '2018-08-23 2018-09-04'
-CO_FLOOD_DOI = '2018-09-04 2018-09-16'
-corr_sbas_df = corr_ll.to_dataframe()
-pre_flood_df = corr_sbas_df[corr_sbas_df.index.get_level_values(0) == PRE_FLOOD_DOI]
-co_flood_df = corr_sbas_df[corr_sbas_df.index.get_level_values(0) == CO_FLOOD_DOI]
-pre_flood_df.to_csv(f'csv/coherence/{PRE_FLOOD_DOI} {POLARIZATION}.csv')
-co_flood_df.to_csv(f'csv/coherence/{CO_FLOOD_DOI} {POLARIZATION}.csv')
-co_flood_df.to_csv(f'csv//coherence/{CO_FLOOD_DOI} {POLARIZATION}.csv')
-print('Saved Dataframes')
+pre_flood_dates, co_flood_dates = doi('data/doi/')
+
+
+def save_to_csv(df, image_type, pre_flood_doi, co_flood_doi):
+    # generate coherence images
+    pre_flood_df = df.loc[pre_flood_doi]
+    co_flood_df = df.loc[co_flood_doi]
+    pre_flood_df.to_csv(f'csv/{image_type}/{pre_flood_doi} {POLARIZATION}.csv')
+    co_flood_df.to_csv(f'csv//{image_type}/{co_flood_doi} {POLARIZATION}.csv')
+    print('Saved {} Dataframes: {} - {}'.format(image_type, pre_flood_doi, co_flood_doi))
+
+
+df_1 = intensity_ll.to_dataframe()
+df_1 = df_1.reset_index()
+df_1 = df_1.set_index('date')
+
+df_2 = corr_ll.to_dataframe()
+df_2 = df_2.reset_index()
+df_2 = df_2.drop(columns=['ref', 'pair'])
+df_2 = df_2.rename(columns={'correlation': 'data', 'rep': 'date'})
+df_2 = df_2.set_index('date')
+
+
+for pre_flood_date, co_flood_date in zip(pre_flood_dates, co_flood_dates):
+    save_to_csv(df_1, 'intensity', pre_flood_date, co_flood_date)
+    save_to_csv(df_2, 'coherence', pre_flood_date, co_flood_date)
+
+
+print('=============JOB DONE=============')
