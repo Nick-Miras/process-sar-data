@@ -6,8 +6,11 @@ import shutil
 import pandas as pd
 import geopandas as gpd
 import json
-from distributed import Client
+
+from dask.distributed import Client
 import dask
+import seaborn as sns
+
 
 # plotting modules
 import pyvista as pv
@@ -46,25 +49,12 @@ pd.set_option('display.max_colwidth', 100)
 from pygmtsar import S1, Stack, tqdm_dask, ASF, Tiles, XYZTiles
 
 
-SUBSWATH = 2
-POLARIZATION = 'VV'
-FILENAME = 'Aug 2018 - Sep 2018'
+# simple Dask initialization
+if 'client' in globals():
+    client.close()
 
 
-def get_sar_1_collections_from(file_path):
-    with open (file_path, 'r') as f:
-        scenes = f.readlines()
-    return [f.strip() for f in scenes]
-
-
-SAR_1_COLLECTIONS_FILE = f'data/bursts/{FILENAME}.txt'
-scenes = get_sar_1_collections_from(SAR_1_COLLECTIONS_FILE)
-SCENES = scenes
-SCENES.reverse()
-
-WORKDIR = 'raw_golden'
-DATADIR = 'data_golden'
-DEM = f'{DATADIR}/dem.nc'
+client = Client(processes=False)
 
 
 def clear_directory(directory):
@@ -78,6 +68,59 @@ def clear_directory(directory):
         except Exception as e:
             print(f'Failed to delete {file_path}. Reason: {e}')
 
+
+def get_sar_1_collections_from(file_path):
+    with open (file_path, 'r') as f:
+        scenes = f.readlines()
+    return [f.strip() for f in scenes]
+
+
+def readlines_in_file(file_path) -> list:
+    with open(file_path, 'r', encoding='utf-8') as file:
+        return [line.strip() for line in file.readlines()]
+
+
+def concatenate_text_files(directory_path):
+    # Initialize an empty string to store the concatenated content
+    concatenated_content = []
+    # Loop through all files in the directory
+    for filename in os.listdir(directory_path):
+        # Check if the file has a '.txt' extension
+        if filename.endswith('.txt') and filename.startswith('2020') is False:
+            # Get the full file path
+            file_path = os.path.join(directory_path, filename)
+            # Open the text file and read its content
+            for line in readlines_in_file(file_path):
+                concatenated_content.append(line.strip())
+
+    return concatenated_content
+
+
+def doi(directory_path):
+    # Initialize an empty string to store the concatenated content
+    pre_flood_dates = []
+    co_flood_dates = []
+    for filename in os.listdir(directory_path):
+        file_path = os.path.join(directory_path, filename)
+        if filename.endswith('.txt'):
+            for line in readlines_in_file(file_path):
+                if filename.startswith('co_flood'):
+                    co_flood_dates.append(line)
+                elif filename.startswith('pre_flood'):
+                    pre_flood_dates.append(line)
+
+    return pre_flood_dates, co_flood_dates
+
+
+SUBSWATH = 2
+POLARIZATION = 'VV'
+
+SCENES = concatenate_text_files('data/bursts/manila/')
+SCENES.reverse()
+
+WORKDIR = 'raw_golden'
+DATADIR = 'data_golden'
+DEM = f'{DATADIR}/dem.nc'
 
 # clear_directory(WORKDIR)
 # clear_directory(DATADIR)
@@ -127,14 +170,6 @@ def get_landmask(sbas):
 download_orbits()
 
 
-# simple Dask initialization
-if 'client' in globals():
-    client.close()
-
-
-client = Client(processes=False)
-
-
 sbas = set_scenes()
 landmask_ra = get_landmask(sbas)
 
@@ -148,26 +183,24 @@ baseline_pairs = sbas.sbas_pairs(days=24)
 
 WAVELENGTH = 20
 COARSEN_GRID = (1, 4)
-sbas.compute_interferogram_multilook(
-    baseline_pairs,
-    'intf_mlook',
-    wavelength=WAVELENGTH,
-    phase=sbas.phasediff(baseline_pairs, data, topo),
-    coarsen=COARSEN_GRID
-)
 
 
-ds_sbas = sbas.open_stack('intf_mlook')
-ds_sbas = ds_sbas.where(landmask_ra.interp_like(ds_sbas, method='nearest'))
-intf_sbas = ds_sbas.phase
-corr_sbas = ds_sbas.correlation
-sbas_phase_goldstein = sbas.goldstein(intf_sbas, corr_sbas, 8)
-intf15m = sbas.interferogram(sbas_phase_goldstein)
+intensity = sbas.multilooking(np.square(np.abs(data)), wavelength=WAVELENGTH, coarsen=COARSEN_GRID)
+phase = sbas.phasediff(baseline_pairs, data, topo)
+phase = sbas.multilooking(phase, wavelength=WAVELENGTH, coarsen=COARSEN_GRID)  # honestly I'm not sure what this does
+corr = sbas.correlation(phase, intensity)
+phase_goldstein = sbas.goldstein(phase, corr, 8)
+interferogram = sbas.interferogram(phase_goldstein)
+corr = sbas.correlation(phase_goldstein, intensity, 8)
+
+tqdm_dask(result := dask.persist(corr, interferogram), desc='Compute Phase and Correlation')
+corr, interferogram = result
 
 
-tqdm_dask(result := dask.persist(corr_sbas, intf15m), desc='Compute Phase and Correlation')
-corr, intf = result
-corr_ll = sbas.ra2ll(corr_sbas)
+corr = corr.where(landmask_ra.interp_like(corr, method='nearest'))
+intensity = intensity.where(landmask_ra.interp_like(intensity, method='nearest'))
+corr_ll = sbas.ra2ll(corr)
+intensity_ll = sbas.ra2ll(intensity)
 
 
 PRE_FLOOD_DOI = '2018-08-23 2018-09-04'
